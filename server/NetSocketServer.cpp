@@ -1,6 +1,6 @@
 #include "NetSocketServer.h"
-#include <strings.h>
 #include <iostream>
+#include <strings.h>
 #include <errno.h>
 #include <algorithm>
 

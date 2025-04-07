@@ -1,22 +1,24 @@
 import { useEffect, useState, useRef } from "react";
-import { useInterval } from "../hooks/useInterval";
+import { useTimer } from "../hooks/useTimer"; // new hook name
 import { API_ENDPOINT, REFRESH_INTERVAL_MS } from "../constants/constants";
 import axios from "axios";
 
-// Types
+// Updated types (from our renamed types file: serverUpdate.ts)
 import { ServerUpdate, Gambler, GameInfo, Croupier } from "../types/serverUpdate";
 
-// Components
-import DecisionControls from "../components/Controls";
-import BetSelector from "../components/Betting";
-import RivalHand from "../components/OpponentsHand";
-import PingIndicator from "../components/PingAnimation";
+// Updated components
+import DecisionControls from "../components/DecisionControls";
+import WagerSelector from "../components/WagerSelector";
+import RivalHand from "../components/RivalHand";
+import PingIndicator from "../components/PingIndicator";
 
 function GameTable() {
-  const [connectionEstablished, setConnectionEstablished] = useState(false);
+  // Connection state
+  const [isConnected, setIsConnected] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
-  const [initialPollCompleted, setInitialPollCompleted] = useState(false);
+  const [initialPollDone, setInitialPollDone] = useState(false);
 
+  // Game state
   const [tableState, setTableState] = useState<GameInfo>({
     phase: 0,
     remainingTime: -1,
@@ -24,8 +26,9 @@ function GameTable() {
     currentTurn: 4,
     gameId: -1,
   });
-  const gamblerTimeRef = useRef(tableState.remainingTime);
+  const remainingTimeRef = useRef(tableState.remainingTime);
 
+  // Gambler (player) state
   const [gamblerId, setGamblerId] = useState(-1);
   const gamblerIdRef = useRef(gamblerId);
   const [gambler, setGambler] = useState<Gambler>({
@@ -41,58 +44,72 @@ function GameTable() {
   const betAmountRef = useRef(gambler.bet);
   betAmountRef.current = gambler.bet;
 
+  // Croupier (dealer) state
   const [croupier, setCroupier] = useState<Croupier>({
     croupierCards: ["", ""],
     totalScore: "0",
   });
 
-  const [positions, setPositions] = useState([-1, -1, -1, -1]);
+  // Seat positions (array of seat indices)
+  const [seatPositions, setSeatPositions] = useState([-1, -1, -1, -1]);
 
+  // Move/timer state for the gambler
   const [currentMove, setCurrentMove] = useState("STAND");
   const currentMoveRef = useRef(currentMove);
   currentMoveRef.current = currentMove;
   const [moveAllowed, setMoveAllowed] = useState(true);
 
-  const [inDelay, setInDelay] = useState(false);
+  // Timeout flag
+  const [inTimeout, setInTimeout] = useState(false);
+  let timeoutHandle: NodeJS.Timer;
 
-  let delayTimer: NodeJS.Timer;
+  // Result message for when game phase is finished
+  const [resultMessage, setResultMessage] = useState<"dealer" | "you" | "tie" | "">("");
 
-  const [resultWinner, setResultWinner] = useState<"dealer" | "you" | "tie" | "">("");
-
+  // --- NEW: processChoice function ---  
+  // This function handles the decision button clicks.
   const processChoice = (choice: string) => {
     if (choice === "CLEAR") {
-      setGambler(prev => ({ ...prev, funds: prev.funds + prev.bet, bet: 0 }));
+      setGambler(prev => ({
+        ...prev,
+        funds: prev.funds + prev.bet,
+        bet: 0,
+      }));
     } else {
       setMoveAllowed(false);
       setCurrentMove(choice);
     }
   };
 
-  useInterval(async () => {
-    if (!connectionEstablished || gamblerId === -1) return;
+  // Poll the server for game updates at regular intervals
+  useTimer(async () => {
+    if (!isConnected || gamblerId === -1) return;
     console.log(`${API_ENDPOINT}/update/${gamblerId}`);
-    const resp = await axios.get(`${API_ENDPOINT}/update/${gamblerId}`);
-    const update: ServerUpdate = resp.data;
+    const response = await axios.get(`${API_ENDPOINT}/update/${gamblerId}`);
+    const update: ServerUpdate = response.data;
     console.log(update);
 
-    gamblerTimeRef.current = update.remainingTime;
+    remainingTimeRef.current = update.remainingTime;
 
+    // Map other gamblers into rivalGamblers and update seat positions
     const rivalGamblers: { [key: number]: Gambler } = {};
-    const tempPositions = [-1, -1, -1, -1];
+    const newSeatPositions = [-1, -1, -1, -1];
     let idx = 0;
     for (let key in update.gamblers) {
-      tempPositions[idx] = idx;
+      newSeatPositions[idx] = idx; // assign seat index
       if (parseInt(key) !== gamblerId) {
         rivalGamblers[idx] = update.gamblers[key];
       }
       idx++;
     }
 
+    // Update croupier (dealer) state
     setCroupier({
       croupierCards: update.croupierCards,
       totalScore: update.croupierTotal,
     });
 
+    // Update gambler state – if in wagering phase, preserve local funds and bet values
     const currentGambler = update.gamblers[gamblerId];
     if (update.phase === 0) {
       currentGambler.funds = gambler.funds;
@@ -100,81 +117,90 @@ function GameTable() {
     }
     setGambler(currentGambler);
 
-    let newTableState: GameInfo = {
+    // Update table (game) state
+    let newGameState: GameInfo = {
       phase: update.phase,
       remainingTime: update.remainingTime,
       croupierBust: update.croupierBust,
       currentTurn: update.currentTurn,
       gameId: update.gameId,
     };
-
     if (Object.keys(rivalGamblers).length > 0) {
-      newTableState = { ...newTableState, otherGamblers: rivalGamblers };
+      newGameState = { ...newGameState, otherGamblers: rivalGamblers };
     }
-    setTableState(newTableState);
-
-    setPositions(tempPositions);
+    setTableState(newGameState);
+    setSeatPositions(newSeatPositions);
     setDataLoaded(true);
 
+    // Determine result message if game phase is complete
     if (update.phase === 2) {
       if (currentGambler.outcome === 0) {
-        setResultWinner("dealer");
+        setResultMessage("dealer");
       } else if (currentGambler.outcome === 1) {
-        setResultWinner("you");
+        setResultMessage("you");
       } else {
-        setResultWinner("tie");
+        setResultMessage("tie");
       }
     } else {
-      setResultWinner("");
+      setResultMessage("");
     }
 
-    if (!initialPollCompleted) setInitialPollCompleted(true);
+    if (!initialPollDone) setInitialPollDone(true);
   }, REFRESH_INTERVAL_MS);
 
+  // Establish connection to the game server
   const initiateConnection = async () => {
-    const connData = await axios.get(API_ENDPOINT + "/connect");
-    console.log(connData.data);
-    gamblerIdRef.current = connData.data.id;
-    setGamblerId(connData.data.id);
+    const connResponse = await axios.get(API_ENDPOINT + "/connect");
+    console.log(connResponse.data);
+    gamblerIdRef.current = connResponse.data.id;
+    setGamblerId(connResponse.data.id);
   };
 
+  // Effect for wagering phase: automatically post bet at timeout
   useEffect(() => {
-    if (tableState.phase === 0 && !inDelay && initialPollCompleted && gamblerTimeRef.current > 1) {
-      setInDelay(true);
-      delayTimer = setTimeout(async () => {
-        setInDelay(false);
+    if (tableState.phase === 0 && !inTimeout && initialPollDone && remainingTimeRef.current > 1) {
+      setInTimeout(true);
+      timeoutHandle = setTimeout(async () => {
+        setInTimeout(false);
         setMoveAllowed(true);
         await axios.post(API_ENDPOINT + `/action/${gamblerIdRef.current}`, {
           type: "BET",
           betAmount: betAmountRef.current,
         });
-      }, (gamblerTimeRef.current - 1) * 1000);
+      }, (remainingTimeRef.current - 1) * 1000);
     }
-  }, [tableState.phase, initialPollCompleted, tableState.remainingTime]);
+  }, [tableState.phase, initialPollDone, tableState.remainingTime]);
 
+  // Effect for playing phase: automatically post turn action at timeout
   useEffect(() => {
-    if (tableState.phase === 1 && tableState.currentTurn === gambler.seatNumber && !inDelay && gamblerTimeRef.current > 1) {
-      setInDelay(true);
-      delayTimer = setTimeout(async () => {
-        setInDelay(false);
+    if (
+      tableState.phase === 1 &&
+      tableState.currentTurn === gambler.seatNumber &&
+      !inTimeout &&
+      remainingTimeRef.current > 1
+    ) {
+      setInTimeout(true);
+      timeoutHandle = setTimeout(async () => {
+        setInTimeout(false);
         setMoveAllowed(true);
         await axios.post(API_ENDPOINT + `/action/${gamblerId}`, {
           type: "TURN",
           action: currentMoveRef.current,
         });
-      }, (gamblerTimeRef.current - 1) * 1000);
+      }, (remainingTimeRef.current - 1) * 1000);
     }
   }, [gambler.totalScore, tableState.currentTurn]);
 
+  // On mount, establish connection to the game server
   useEffect(() => {
-    setConnectionEstablished(false);
+    setIsConnected(false);
     initiateConnection();
-    setConnectionEstablished(true);
+    setIsConnected(true);
   }, []);
 
   return (
     <div className="w-96 max-w-sm h-screen flex items-center flex-col">
-      {(!connectionEstablished && !dataLoaded) ? (
+      {(!isConnected && !dataLoaded) ? (
         <div>connecting to the table</div>
       ) : (
         <>
@@ -201,9 +227,7 @@ function GameTable() {
                     className="flex justify-center mt-14 relative scale-[0.8] flex-wrap w-[300px]"
                   >
                     <h1
-                      className={`text-3xl text-primary absolute -top-8 -right-0 ${
-                        resultWinner === "you" ? "line-through" : ""
-                      }`}
+                      className={`text-3xl text-primary absolute -top-8 -right-0 ${resultMessage === "you" ? "line-through" : ""}`}
                     >
                       {tableState.phase === 2 ? croupier.totalScore : '---'}
                     </h1>
@@ -241,25 +265,24 @@ function GameTable() {
                   <div className="bg-[url('/src/assets/cards/dealerShadow.png')] bg-cover bg-no-repeat w-40 h-4 mt-10 opacity-25 blur-sm"></div>
                 </>
               )}
-
               <div id="tableArea" className="flex absolute bottom-64">
-                {positions.map((pos, index) => {
-                  if (pos === gambler.seatNumber) {
+                {seatPositions.map((seat, idx) => {
+                  if (seat === gambler.seatNumber) {
                     return (
                       <div
-                        key={index}
+                        key={idx}
                         className="spot w-20 h-32 border-solid border-slate-100 rounded-md border-4 opacity-75 bg-slate-800 text-white flex justify-center items-center"
                       >
-                        {pos === tableState.currentTurn ? (
+                        {seat === tableState.currentTurn ? (
                           <PingIndicator topOffset="-top-6" rightOffset="right-[40%]" />
                         ) : null}
                         YOUR PLACE
                       </div>
                     );
-                  } else if (pos !== -1) {
+                  } else if (seat !== -1) {
                     return (
-                      <div className="spot" key={index}>
-                        {pos === tableState.currentTurn ? (
+                      <div className="spot" key={idx}>
+                        {seat === tableState.currentTurn ? (
                           <PingIndicator topOffset="top-4" rightOffset="right-[50%]" />
                         ) : null}
                         {tableState.phase === 0 ? (
@@ -267,27 +290,17 @@ function GameTable() {
                             RIVALS
                           </div>
                         ) : (
-                          <RivalHand
-                            cards={
-                              tableState.otherGamblers
-                                ? tableState.otherGamblers[pos]["hand"]
-                                : [""]
-                            }
-                          />
+                          <RivalHand cards={tableState.otherGamblers ? tableState.otherGamblers[seat]["hand"] : [""]} />
                         )}
                       </div>
                     );
                   } else {
                     return (
-                      <div
-                        key={index}
-                        className="spot w-20 h-32 border-solid border-slate-100 rounded-md border-4 opacity-50"
-                      ></div>
+                      <div key={idx} className="spot w-20 h-32 border-solid border-slate-100 rounded-md border-4 opacity-50"></div>
                     );
                   }
                 })}
               </div>
-
               {tableState.phase === 0 ? (
                 <>
                   <div className="bg-[url('/src/assets/poker_chip_bg.png')] bg-no-repeat bg-cover w-48 h-48 opacity-50 flex justify-center items-center">
@@ -297,19 +310,12 @@ function GameTable() {
                       <h1 className="text-2xl">0</h1>
                     )}
                   </div>
-                  <BetSelector updateGambler={setGambler} />
+                  <WagerSelector updateGambler={setGambler} />
                 </>
               ) : (
                 <>
-                  <div
-                    id="gamblerHand"
-                    className="flex justify-center mt-14 relative scale-75 flex-wrap w-[350px]"
-                  >
-                    <h1
-                      className={`text-3xl text-primary absolute -top-8 -right-0 ${
-                        resultWinner === "dealer" ? "line-through" : ""
-                      }`}
-                    >
+                  <div id="gamblerHand" className="flex justify-center mt-14 relative scale-75 flex-wrap w-[350px]">
+                    <h1 className={`text-3xl text-primary absolute -top-8 -right-0 ${resultMessage === "dealer" ? "line-through" : ""}`}>
                       {gambler.totalScore}
                     </h1>
                     {gambler.active === 1 ? (
@@ -318,16 +324,16 @@ function GameTable() {
                       </div>
                     ) : (
                       <>
-                        {gambler.hand.map((cardStr, idx) => {
-                          let parts = cardStr.split("");
+                        {gambler.hand.map((cardStr, index) => {
+                          const parts = cardStr.split("");
                           const suit = parts.pop();
                           const num = parts.join("");
-                          const extraStyle = idx > 2 ? "absolute sendToAbove -bottom-32" : "";
-                          const imgPath = `/src/assets/cards/card${suit}.png`;
+                          const extraStyle = index > 2 ? "absolute sendToAbove -bottom-32" : "";
+                          const imagePath = `/src/assets/cards/card${suit}.png`;
                           return (
                             <div
-                              key={idx}
-                              style={{ backgroundImage: `url(${imgPath})` }}
+                              key={index}
+                              style={{ backgroundImage: `url(${imagePath})` }}
                               className={`flex justify-center items-center text-6xl text-[#6D5C5C] bg-cover w-[7rem] h-[11rem] -ml-6 animate-getCard -rotate-2 ${extraStyle}`}
                             >
                               {num}
@@ -341,31 +347,23 @@ function GameTable() {
                         exceeded
                       </h1>
                     ) : null}
-                    {resultWinner !== "" ? (
+                    {resultMessage !== "" ? (
                       <h1 className="text-primary text-4xl absolute -top-10 z-50 animate-getAlertWinner">
-                        {resultWinner} {resultWinner === "tie" ? "" : "win"} {resultWinner === "you" ? ":)" : ":("}
+                        {resultMessage} {resultMessage === "tie" ? "" : "win"} {resultMessage === "you" ? ":)" : ":("}
                       </h1>
                     ) : null}
                   </div>
                   <div className="bg-[url('/src/assets/cards/yourShadow.png')] bg-cover blur-sm opacity-25 bg-no-repeat w-60 h-10 mt-10 relative scale-[0.8] md:scale-100 -z-50"></div>
                 </>
               )}
-
               <div className="mt-14">
                 <div className="w-full h-[6px] rounded-full bg-loading opacity-50 mb-4 relative"></div>
                 {tableState.phase === 0 ? (
                   <DecisionControls processChoice={processChoice} mode="WAGERING" />
                 ) : (
-                  <DecisionControls
-                    processChoice={processChoice}
-                    mode="IN_PLAY"
-                    isEnabled={
-                      tableState.currentTurn === gambler.seatNumber && moveAllowed && gambler.active === 0
-                    }
-                  />
+                  <DecisionControls processChoice={processChoice} mode="IN_PLAY" isEnabled={tableState.currentTurn === gambler.seatNumber && moveAllowed && gambler.active === 0} />
                 )}
               </div>
-
               <div className="absolute right-8 bottom-8 w-64 h-16 border-2 rounded-md flex justify-center flex-col p-4 opacity-50">
                 <h1 className="text-2xl">{"WAGER: " + gambler.bet}</h1>
                 <h1 className="text-2xl">{"FUNDS: " + gambler.funds}</h1>

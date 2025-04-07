@@ -1,6 +1,6 @@
 #include "SyncObject.h"
-#include <algorithm>
 #include <iostream>
+#include <algorithm>
 #include <stdio.h>
 #include <errno.h>
 #include <stdarg.h>

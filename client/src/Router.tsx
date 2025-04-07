@@ -1,12 +1,12 @@
 import { Route, Routes } from "react-router-dom";
-import Blackjack from "./pages/Blackjack";
-import { Home } from "./pages/Home";
+import GameTable from "./pages/GameTable";
+import { LandingPage } from "./pages/LandingPage";
 
 export function Router() {
   return (
     <Routes>
-      <Route path="/" element={<Home />} />
-      <Route path="/game" element={<Blackjack />} />
+      <Route path="/" element={<LandingPage />} />
+      <Route path="/game" element={<GameTable />} />
     </Routes>
   );
 }
